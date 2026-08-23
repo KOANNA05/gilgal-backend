@@ -15,6 +15,7 @@ app.use(express.json({ limit: "10mb" })); // 사진(base64)이 들어올 수 있
 
 const RES_FILE = path.join(__dirname, "reservations.json");
 const GALLERY_FILE = path.join(__dirname, "gallery.json");
+const INQUIRY_FILE = path.join(__dirname, "inquiries.json");
 
 function readJson(file) {
   try {
@@ -30,6 +31,8 @@ const readReservations = () => readJson(RES_FILE);
 const writeReservations = (list) => writeJson(RES_FILE, list);
 const readGallery = () => readJson(GALLERY_FILE);
 const writeGallery = (list) => writeJson(GALLERY_FILE, list);
+const readInquiries = () => readJson(INQUIRY_FILE);
+const writeInquiries = (list) => writeJson(INQUIRY_FILE, list);
 
 function checkAdminKey(req, res) {
   const key = req.query.key || req.headers["x-admin-key"];
@@ -167,6 +170,35 @@ app.delete("/api/gallery/:id", (req, res) => {
   const list = readGallery().filter((p) => p.id !== req.params.id);
   writeGallery(list);
   res.json({ ok: true });
+});
+
+/* ---------------------------- 문의 게시판 ---------------------------- */
+
+// 누구나 조회 가능 (예약자 화면 게시판)
+app.get("/api/inquiries", (req, res) => {
+  res.json({ ok: true, inquiries: readInquiries() });
+});
+
+// 누구나 문의 등록 가능
+app.post("/api/inquiries", (req, res) => {
+  const { name, message } = req.body;
+  if (!name || !message) return res.status(400).json({ ok: false, error: "이름과 내용을 입력해주세요." });
+  const list = readInquiries();
+  const q = { id: `${Date.now()}`, name, message, answer: "", answered: false, createdAt: new Date().toISOString().slice(0, 10) };
+  list.push(q);
+  writeInquiries(list);
+  res.json({ ok: true, inquiry: q });
+});
+
+// 관리자용: 답변 등록
+app.patch("/api/inquiries/:id", (req, res) => {
+  if (!checkAdminKey(req, res)) return;
+  const list = readInquiries();
+  const idx = list.findIndex((q) => q.id === req.params.id);
+  if (idx === -1) return res.status(404).json({ ok: false, error: "문의를 찾을 수 없습니다." });
+  list[idx] = { ...list[idx], answer: req.body.answer, answered: true };
+  writeInquiries(list);
+  res.json({ ok: true, inquiry: list[idx] });
 });
 
 app.get("/", (req, res) => {
