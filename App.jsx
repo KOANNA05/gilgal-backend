@@ -430,6 +430,16 @@ async function postGalleryBackend(post) {
 async function deleteGalleryBackend(id) {
   return apiDelete(`/api/gallery/${id}?key=${encodeURIComponent(BACKEND_ADMIN_KEY)}`);
 }
+async function fetchInquiriesBackend() {
+  const data = await apiGet("/api/inquiries");
+  return data && data.ok ? data.inquiries : null;
+}
+async function postInquiryBackend(q) {
+  return apiPost("/api/inquiries", q);
+}
+async function answerInquiryBackend(id, answer) {
+  return apiPatch(`/api/inquiries/${id}?key=${encodeURIComponent(BACKEND_ADMIN_KEY)}`, { answer });
+}
 
 function dateRange(checkIn, checkOut) {
   const out = [];
@@ -1603,9 +1613,10 @@ export default function App() {
 
       // 백엔드가 연결돼 있으면 서버 데이터를 기준으로 덮어써서 모든 기기가 같은 내용을 봅니다.
       if (BACKEND_URL) {
-        const [backendReservations, backendGallery] = await Promise.all([fetchAdminReservations(), fetchGalleryBackend()]);
+        const [backendReservations, backendGallery, backendInquiries] = await Promise.all([fetchAdminReservations(), fetchGalleryBackend(), fetchInquiriesBackend()]);
         if (Array.isArray(backendReservations)) setReservations(backendReservations);
         if (Array.isArray(backendGallery)) setGallery(backendGallery);
+        if (Array.isArray(backendInquiries)) setInquiries(backendInquiries);
       }
 
       setLoaded(true);
@@ -1624,6 +1635,17 @@ export default function App() {
   }, [gallery, loaded]);
   useEffect(() => { if (loaded) storeSet("gg_utility_v2", utilityBills); }, [utilityBills, loaded]);
   useEffect(() => { if (loaded) storeSet("gg_maint_v2", maintenance); }, [maintenance, loaded]);
+
+  // 백엔드 연결 시, 예약·사진·문의를 주기적으로 다시 불러와 다른 기기의 변경사항을 반영해요.
+  useEffect(() => {
+    if (!loaded || !BACKEND_URL) return;
+    const interval = setInterval(async () => {
+      const [g, q] = await Promise.all([fetchGalleryBackend(), fetchInquiriesBackend()]);
+      if (Array.isArray(g)) setGallery(g);
+      if (Array.isArray(q)) setInquiries(q);
+    }, 15000);
+    return () => clearInterval(interval);
+  }, [loaded]);
 
   // 새 예약 알림 (이 브라우저 탭이 열려 있고 알림 권한을 허용했을 때만 동작해요)
   const [notifyOn, setNotifyOn] = useState(false);
@@ -1665,8 +1687,20 @@ export default function App() {
   const pendingCount = reservations.filter((r) => r.status === "확인중" || r.status === "대기").length;
 
   const addReservation = useCallback((r) => setReservations((prev) => [...prev, r]), []);
-  const addInquiry = useCallback((q) => setInquiries((prev) => [...prev, q]), []);
-  const answerInquiry = useCallback((id, answer) => setInquiries((prev) => prev.map((q) => (q.id === id ? { ...q, answer, answered: true } : q))), []);
+  const addInquiry = useCallback(async (q) => {
+    if (BACKEND_URL) {
+      const result = await postInquiryBackend(q);
+      if (result && result.ok) {
+        setInquiries((prev) => [...prev, result.inquiry]);
+        return;
+      }
+    }
+    setInquiries((prev) => [...prev, q]);
+  }, []);
+  const answerInquiry = useCallback(async (id, answer) => {
+    if (BACKEND_URL) await answerInquiryBackend(id, answer);
+    setInquiries((prev) => prev.map((q) => (q.id === id ? { ...q, answer, answered: true } : q)));
+  }, []);
   const addGalleryPost = useCallback(async (p) => {
     if (BACKEND_URL) {
       const result = await postGalleryBackend(p);
@@ -1674,6 +1708,8 @@ export default function App() {
         setGallery((prev) => [...prev, result.post]);
         return;
       }
+      alert((result && result.error) || "서버에 사진 저장을 실패했어요. 잠시 후 다시 시도해주세요.");
+      return;
     }
     setGallery((prev) => [...prev, p]);
   }, []);
