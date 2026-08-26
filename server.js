@@ -1,11 +1,12 @@
 // 길갈라운지 백엔드
 // - 예약 저장 + 사장님 이메일 알림
-// - 예약/사진(길갈라운지 모습) 데이터를 모든 기기가 함께 볼 수 있도록 서버에 저장
+// - 예약/사진(길갈라운지 모습)/문의 데이터를 JSONBin.io(무료 클라우드 저장소)에 저장합니다.
+//   (Render 무료 서버는 파일을 서버 안에만 저장하면 재시작될 때 사라지기 때문에,
+//    별도의 무료 저장소를 사용해서 데이터가 항상 안전하게 남도록 했어요.)
 
 const express = require("express");
 const cors = require("cors");
-const fs = require("fs");
-const path = require("path");
+const fetch = require("node-fetch");
 const nodemailer = require("nodemailer");
 require("dotenv").config();
 
@@ -13,26 +14,59 @@ const app = express();
 app.use(cors());
 app.use(express.json({ limit: "10mb" })); // 사진(base64)이 들어올 수 있어 용량을 넉넉히 잡습니다.
 
-const RES_FILE = path.join(__dirname, "reservations.json");
-const GALLERY_FILE = path.join(__dirname, "gallery.json");
-const INQUIRY_FILE = path.join(__dirname, "inquiries.json");
+const JSONBIN_KEY = process.env.JSONBIN_KEY;
+const BINS = {
+  reservations: process.env.JSONBIN_BIN_RESERVATIONS,
+  gallery: process.env.JSONBIN_BIN_GALLERY,
+  inquiries: process.env.JSONBIN_BIN_INQUIRIES,
+};
 
-function readJson(file) {
+async function readBin(name) {
+  const binId = BINS[name];
+  if (!JSONBIN_KEY || !binId) {
+    console.warn(`[JSONBin] ${name}: 설정값(JSONBIN_KEY 또는 Bin ID)이 비어있어요.`);
+    return [];
+  }
   try {
-    return JSON.parse(fs.readFileSync(file, "utf8"));
-  } catch {
+    const res = await fetch(`https://api.jsonbin.io/v3/b/${binId}/latest`, {
+      headers: { "X-Master-Key": JSONBIN_KEY },
+    });
+    if (!res.ok) {
+      const text = await res.text();
+      console.error(`[JSONBin] ${name} 읽기 실패 (status ${res.status}):`, text);
+      return [];
+    }
+    const data = await res.json();
+    return Array.isArray(data.record) ? data.record : [];
+  } catch (err) {
+    console.error(`[JSONBin] ${name} 읽기 중 오류:`, err.message);
     return [];
   }
 }
-function writeJson(file, data) {
-  fs.writeFileSync(file, JSON.stringify(data, null, 2), "utf8");
+
+async function writeBin(name, list) {
+  const binId = BINS[name];
+  if (!JSONBIN_KEY || !binId) {
+    console.warn(`[JSONBin] ${name}: 설정값이 비어있어 저장을 건너뜁니다.`);
+    return false;
+  }
+  try {
+    const res = await fetch(`https://api.jsonbin.io/v3/b/${binId}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", "X-Master-Key": JSONBIN_KEY },
+      body: JSON.stringify(list),
+    });
+    if (!res.ok) {
+      const text = await res.text();
+      console.error(`[JSONBin] ${name} 저장 실패 (status ${res.status}):`, text);
+      return false;
+    }
+    return true;
+  } catch (err) {
+    console.error(`[JSONBin] ${name} 저장 중 오류:`, err.message);
+    return false;
+  }
 }
-const readReservations = () => readJson(RES_FILE);
-const writeReservations = (list) => writeJson(RES_FILE, list);
-const readGallery = () => readJson(GALLERY_FILE);
-const writeGallery = (list) => writeJson(GALLERY_FILE, list);
-const readInquiries = () => readJson(INQUIRY_FILE);
-const writeInquiries = (list) => writeJson(INQUIRY_FILE, list);
 
 function checkAdminKey(req, res) {
   const key = req.query.key || req.headers["x-admin-key"];
@@ -81,17 +115,19 @@ async function sendNotificationEmail(reservation) {
 
 /* ---------------------------- 예약 ---------------------------- */
 
-// 새 예약 접수 (누구나 호출 가능 - 예약자용)
 app.post("/api/reservations", async (req, res) => {
   try {
     const reservation = req.body;
     if (!reservation || !reservation.guestName || !reservation.checkIn || !reservation.checkOut) {
       return res.status(400).json({ ok: false, error: "필수 항목이 없습니다." });
     }
-    const list = readReservations();
+    const list = await readBin("reservations");
     const withId = { ...reservation, id: reservation.id || `${Date.now()}`, receivedAt: new Date().toISOString() };
     list.push(withId);
-    writeReservations(list);
+    const saved = await writeBin("reservations", list);
+    if (!saved) {
+      return res.status(500).json({ ok: false, error: "저장소 연결에 문제가 있어 예약이 저장되지 않았습니다. 잠시 후 다시 시도해주세요." });
+    }
 
     try {
       await sendNotificationEmail(reservation);
@@ -106,98 +142,90 @@ app.post("/api/reservations", async (req, res) => {
   }
 });
 
-// 예약자용: 날짜 겹침 확인 & 달력 표시용 (이름/연락처 등 개인정보는 제외)
-app.get("/api/reservations/availability", (req, res) => {
-  const list = readReservations().filter((r) => r.status !== "취소");
+app.get("/api/reservations/availability", async (req, res) => {
+  const list = (await readBin("reservations")).filter((r) => r.status !== "취소");
   res.json({ ok: true, dates: list.map((r) => ({ checkIn: r.checkIn, checkOut: r.checkOut, status: r.status })) });
 });
 
-// 예약자용: 연락처로 내 예약 조회
-app.get("/api/reservations/lookup", (req, res) => {
+app.get("/api/reservations/lookup", async (req, res) => {
   const phone = (req.query.phone || "").replace(/-/g, "");
   if (!phone) return res.status(400).json({ ok: false, error: "연락처를 입력해주세요." });
-  const list = readReservations().filter((r) => (r.phone || "").replace(/-/g, "") === phone);
+  const list = (await readBin("reservations")).filter((r) => (r.phone || "").replace(/-/g, "") === phone);
   res.json({ ok: true, reservations: list });
 });
 
-// 관리자용: 전체 예약 조회
-app.get("/api/reservations", (req, res) => {
+app.get("/api/reservations", async (req, res) => {
   if (!checkAdminKey(req, res)) return;
-  res.json({ ok: true, reservations: readReservations() });
+  res.json({ ok: true, reservations: await readBin("reservations") });
 });
 
-// 관리자용: 예약 상태 변경
-app.patch("/api/reservations/:id", (req, res) => {
+app.patch("/api/reservations/:id", async (req, res) => {
   if (!checkAdminKey(req, res)) return;
-  const list = readReservations();
+  const list = await readBin("reservations");
   const idx = list.findIndex((r) => r.id === req.params.id);
   if (idx === -1) return res.status(404).json({ ok: false, error: "예약을 찾을 수 없습니다." });
   list[idx] = { ...list[idx], ...req.body };
-  writeReservations(list);
+  await writeBin("reservations", list);
   res.json({ ok: true, reservation: list[idx] });
 });
 
-// 관리자용: 예약 삭제
-app.delete("/api/reservations/:id", (req, res) => {
+app.delete("/api/reservations/:id", async (req, res) => {
   if (!checkAdminKey(req, res)) return;
-  const list = readReservations().filter((r) => r.id !== req.params.id);
-  writeReservations(list);
+  const list = (await readBin("reservations")).filter((r) => r.id !== req.params.id);
+  await writeBin("reservations", list);
   res.json({ ok: true });
 });
 
 /* ---------------------------- 길갈라운지 모습 (사진첩) ---------------------------- */
 
-// 누구나 조회 가능 (예약자 화면에 보여줌)
-app.get("/api/gallery", (req, res) => {
-  res.json({ ok: true, posts: readGallery() });
+app.get("/api/gallery", async (req, res) => {
+  res.json({ ok: true, posts: await readBin("gallery") });
 });
 
-// 관리자용: 사진 올리기
-app.post("/api/gallery", (req, res) => {
+app.post("/api/gallery", async (req, res) => {
   if (!checkAdminKey(req, res)) return;
   const { src, caption } = req.body;
   if (!src) return res.status(400).json({ ok: false, error: "이미지가 없습니다." });
-  const list = readGallery();
+  const list = await readBin("gallery");
   const post = { id: `${Date.now()}`, src, caption: caption || "", createdAt: new Date().toISOString().slice(0, 10) };
   list.push(post);
-  writeGallery(list);
+  const saved = await writeBin("gallery", list);
+  if (!saved) {
+    return res.status(500).json({ ok: false, error: "저장소 용량 초과이거나 연결 문제로 사진이 저장되지 않았습니다." });
+  }
   res.json({ ok: true, post });
 });
 
-// 관리자용: 사진 삭제
-app.delete("/api/gallery/:id", (req, res) => {
+app.delete("/api/gallery/:id", async (req, res) => {
   if (!checkAdminKey(req, res)) return;
-  const list = readGallery().filter((p) => p.id !== req.params.id);
-  writeGallery(list);
+  const list = (await readBin("gallery")).filter((p) => p.id !== req.params.id);
+  await writeBin("gallery", list);
   res.json({ ok: true });
 });
 
 /* ---------------------------- 문의 게시판 ---------------------------- */
 
-// 누구나 조회 가능 (예약자 화면 게시판)
-app.get("/api/inquiries", (req, res) => {
-  res.json({ ok: true, inquiries: readInquiries() });
+app.get("/api/inquiries", async (req, res) => {
+  res.json({ ok: true, inquiries: await readBin("inquiries") });
 });
 
-// 누구나 문의 등록 가능
-app.post("/api/inquiries", (req, res) => {
+app.post("/api/inquiries", async (req, res) => {
   const { name, message } = req.body;
   if (!name || !message) return res.status(400).json({ ok: false, error: "이름과 내용을 입력해주세요." });
-  const list = readInquiries();
+  const list = await readBin("inquiries");
   const q = { id: `${Date.now()}`, name, message, answer: "", answered: false, createdAt: new Date().toISOString().slice(0, 10) };
   list.push(q);
-  writeInquiries(list);
+  await writeBin("inquiries", list);
   res.json({ ok: true, inquiry: q });
 });
 
-// 관리자용: 답변 등록
-app.patch("/api/inquiries/:id", (req, res) => {
+app.patch("/api/inquiries/:id", async (req, res) => {
   if (!checkAdminKey(req, res)) return;
-  const list = readInquiries();
+  const list = await readBin("inquiries");
   const idx = list.findIndex((q) => q.id === req.params.id);
   if (idx === -1) return res.status(404).json({ ok: false, error: "문의를 찾을 수 없습니다." });
   list[idx] = { ...list[idx], answer: req.body.answer, answered: true };
-  writeInquiries(list);
+  await writeBin("inquiries", list);
   res.json({ ok: true, inquiry: list[idx] });
 });
 
