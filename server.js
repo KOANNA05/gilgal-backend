@@ -15,11 +15,39 @@ app.use(cors());
 app.use(express.json({ limit: "10mb" })); // 사진(base64)이 들어올 수 있어 용량을 넉넉히 잡습니다.
 
 const JSONBIN_KEY = process.env.JSONBIN_KEY;
+const IMGBB_KEY = process.env.IMGBB_KEY; // 사진은 JSONBin이 아니라 ImgBB(무료 이미지 호스팅)에 저장해요.
 const BINS = {
   reservations: process.env.JSONBIN_BIN_RESERVATIONS,
   gallery: process.env.JSONBIN_BIN_GALLERY,
   inquiries: process.env.JSONBIN_BIN_INQUIRIES,
 };
+
+// 사진(base64)을 ImgBB에 올리고 이미지 주소(URL)만 돌려받습니다.
+// (JSONBin 무료 요금제는 저장함 하나에 100KB까지만 담을 수 있어서, 사진 자체는 여기 저장하지 않아요.)
+async function uploadToImgbb(dataUrl) {
+  if (!IMGBB_KEY) {
+    console.warn("[ImgBB] IMGBB_KEY가 설정되지 않았습니다.");
+    return null;
+  }
+  try {
+    const base64 = dataUrl.includes(",") ? dataUrl.split(",")[1] : dataUrl;
+    const params = new URLSearchParams();
+    params.append("image", base64);
+    const res = await fetch(`https://api.imgbb.com/1/upload?key=${IMGBB_KEY}`, {
+      method: "POST",
+      body: params,
+    });
+    const data = await res.json();
+    if (!data.success) {
+      console.error("[ImgBB] 업로드 실패:", JSON.stringify(data));
+      return null;
+    }
+    return data.data.url;
+  } catch (err) {
+    console.error("[ImgBB] 업로드 중 오류:", err.message);
+    return null;
+  }
+}
 
 async function readBin(name) {
   const binId = BINS[name];
@@ -186,12 +214,18 @@ app.post("/api/gallery", async (req, res) => {
   if (!checkAdminKey(req, res)) return;
   const { src, caption } = req.body;
   if (!src) return res.status(400).json({ ok: false, error: "이미지가 없습니다." });
+
+  const hostedUrl = await uploadToImgbb(src);
+  if (!hostedUrl) {
+    return res.status(500).json({ ok: false, error: "사진 업로드에 실패했어요 (ImgBB 연결 문제). 잠시 후 다시 시도해주세요." });
+  }
+
   const list = await readBin("gallery");
-  const post = { id: `${Date.now()}`, src, caption: caption || "", createdAt: new Date().toISOString().slice(0, 10) };
+  const post = { id: `${Date.now()}`, src: hostedUrl, caption: caption || "", createdAt: new Date().toISOString().slice(0, 10) };
   list.push(post);
   const saved = await writeBin("gallery", list);
   if (!saved) {
-    return res.status(500).json({ ok: false, error: "저장소 용량 초과이거나 연결 문제로 사진이 저장되지 않았습니다." });
+    return res.status(500).json({ ok: false, error: "저장소 연결 문제로 사진 정보가 저장되지 않았습니다." });
   }
   res.json({ ok: true, post });
 });
