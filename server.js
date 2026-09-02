@@ -15,36 +15,38 @@ app.use(cors());
 app.use(express.json({ limit: "10mb" })); // 사진(base64)이 들어올 수 있어 용량을 넉넉히 잡습니다.
 
 const JSONBIN_KEY = process.env.JSONBIN_KEY;
-const IMGBB_KEY = process.env.IMGBB_KEY; // 사진은 JSONBin이 아니라 ImgBB(무료 이미지 호스팅)에 저장해요.
+const CLOUDINARY_CLOUD_NAME = process.env.CLOUDINARY_CLOUD_NAME; // 사진은 JSONBin이 아니라 Cloudinary(무료 이미지 호스팅)에 저장해요.
+const CLOUDINARY_UPLOAD_PRESET = process.env.CLOUDINARY_UPLOAD_PRESET;
 const BINS = {
   reservations: process.env.JSONBIN_BIN_RESERVATIONS,
   gallery: process.env.JSONBIN_BIN_GALLERY,
   inquiries: process.env.JSONBIN_BIN_INQUIRIES,
 };
 
-// 사진(base64)을 ImgBB에 올리고 이미지 주소(URL)만 돌려받습니다.
-// (JSONBin 무료 요금제는 저장함 하나에 100KB까지만 담을 수 있어서, 사진 자체는 여기 저장하지 않아요.)
-async function uploadToImgbb(dataUrl) {
-  if (!IMGBB_KEY) {
-    console.warn("[ImgBB] IMGBB_KEY가 설정되지 않았습니다.");
+// 사진(base64)을 Cloudinary에 올리고 이미지 주소(URL)만 돌려받습니다.
+// (JSONBin 무료 요금제는 저장함 하나에 100KB까지만 담을 수 있어서, 사진 자체는 여기 저장하지 않아요.
+//  ImgBB는 서버(클라우드)에서 오는 요청을 차단해서, 서버 업로드에 적합한 Cloudinary로 바꿨어요.)
+async function uploadToCloudinary(dataUrl) {
+  if (!CLOUDINARY_CLOUD_NAME || !CLOUDINARY_UPLOAD_PRESET) {
+    console.warn("[Cloudinary] CLOUDINARY_CLOUD_NAME 또는 CLOUDINARY_UPLOAD_PRESET이 설정되지 않았습니다.");
     return null;
   }
   try {
-    const base64 = dataUrl.includes(",") ? dataUrl.split(",")[1] : dataUrl;
     const params = new URLSearchParams();
-    params.append("image", base64);
-    const res = await fetch(`https://api.imgbb.com/1/upload?key=${IMGBB_KEY}`, {
+    params.append("file", dataUrl); // Cloudinary는 data URL 전체("data:image/...;base64,...")를 그대로 받아들여요.
+    params.append("upload_preset", CLOUDINARY_UPLOAD_PRESET);
+    const res = await fetch(`https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD_NAME}/image/upload`, {
       method: "POST",
       body: params,
     });
     const data = await res.json();
-    if (!data.success) {
-      console.error("[ImgBB] 업로드 실패:", JSON.stringify(data));
+    if (!data.secure_url) {
+      console.error("[Cloudinary] 업로드 실패:", JSON.stringify(data));
       return null;
     }
-    return data.data.url;
+    return data.secure_url;
   } catch (err) {
-    console.error("[ImgBB] 업로드 중 오류:", err.message);
+    console.error("[Cloudinary] 업로드 중 오류:", err.message);
     return null;
   }
 }
@@ -215,9 +217,9 @@ app.post("/api/gallery", async (req, res) => {
   const { src, caption } = req.body;
   if (!src) return res.status(400).json({ ok: false, error: "이미지가 없습니다." });
 
-  const hostedUrl = await uploadToImgbb(src);
+  const hostedUrl = await uploadToCloudinary(src);
   if (!hostedUrl) {
-    return res.status(500).json({ ok: false, error: "사진 업로드에 실패했어요 (ImgBB 연결 문제). 잠시 후 다시 시도해주세요." });
+    return res.status(500).json({ ok: false, error: "사진 업로드에 실패했어요 (Cloudinary 연결 문제). 잠시 후 다시 시도해주세요." });
   }
 
   const list = await readBin("gallery");
