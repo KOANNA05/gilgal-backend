@@ -17,7 +17,8 @@ app.use(express.json({ limit: "10mb" })); // 사진(base64)이 들어올 수 있
 const JSONBIN_KEY = process.env.JSONBIN_KEY;
 const CLOUDINARY_CLOUD_NAME = process.env.CLOUDINARY_CLOUD_NAME; // 사진은 JSONBin이 아니라 Cloudinary(무료 이미지 호스팅)에 저장해요.
 const CLOUDINARY_UPLOAD_PRESET = process.env.CLOUDINARY_UPLOAD_PRESET;
-const BINS = {
+const BINS = {reviews: process.env.JSONBIN_BIN_REVIEWS,
+
   reservations: process.env.JSONBIN_BIN_RESERVATIONS,
   gallery: process.env.JSONBIN_BIN_GALLERY,
   inquiries: process.env.JSONBIN_BIN_INQUIRIES,
