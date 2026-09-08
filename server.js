@@ -254,7 +254,48 @@ app.post("/api/inquiries", async (req, res) => {
   await writeBin("inquiries", list);
   res.json({ ok: true, inquiry: q });
 });
+/* -------------------------- 후기 게시판 -------------------------- */
 
+app.get("/api/reviews", async (req, res) => {
+  res.json({ ok: true, reviews: await readBin("reviews") });
+});
+
+app.post("/api/reviews", async (req, res) => {
+  const { name, rating, text, photoData } = req.body;
+  if (!name || !text) {
+    return res.status(400).json({ ok: false, error: "이름과 후기 내용을 입력해주세요." });
+  }
+
+  let photoUrl = "";
+  if (photoData) {
+    const uploaded = await uploadToCloudinary(photoData);
+    if (uploaded) photoUrl = uploaded;
+  }
+
+  const list = await readBin("reviews");
+  const review = {
+    id: `${Date.now()}`,
+    name,
+    rating: Number(rating) || 5,
+    text,
+    photoUrl,
+    createdAt: new Date().toISOString(),
+  };
+  list.push(review);
+
+  const saved = await writeBin("reviews", list);
+  if (!saved) {
+    return res.status(500).json({ ok: false, error: "저장소 연결 문제로 후기가 저장되지 않았습니다." });
+  }
+  res.json({ ok: true, review });
+});
+
+app.delete("/api/reviews/:id", async (req, res) => {
+  if (!checkAdminKey(req, res)) return;
+  const list = (await readBin("reviews")).filter((r) => r.id !== req.params.id);
+  await writeBin("reviews", list);
+  res.json({ ok: true });
+});
 app.patch("/api/inquiries/:id", async (req, res) => {
   if (!checkAdminKey(req, res)) return;
   const list = await readBin("inquiries");
