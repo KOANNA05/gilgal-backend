@@ -307,6 +307,13 @@ app.patch("/api/inquiries/:id", async (req, res) => {
   await writeBin("inquiries", list);
   res.json({ ok: true, inquiry: list[idx] });
 });
+app.delete("/api/inquiries/:id", async (req, res) => {
+  if (!checkAdminKey(req, res)) return;
+  const list = (await readBin("inquiries")).filter((q) => q.id !== req.params.id);
+  await writeBin("inquiries", list);
+  res.json({ ok: true });
+});
+
 /* -------------------------- 후기 게시판 -------------------------- */
 
 app.get("/api/reviews", async (req, res) => {
